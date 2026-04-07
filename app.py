@@ -12,10 +12,12 @@ load_dotenv()
 
 def get_api_key():
     try:
+        # Priorité aux secrets Streamlit (Cloud)
         if "OPENAI_API_KEY" in st.secrets:
             return st.secrets["OPENAI_API_KEY"]
     except:
         pass
+    # Repli sur le fichier .env (Local)
     return os.getenv("OPENAI_API_KEY")
 
 api_key = get_api_key()
@@ -62,7 +64,7 @@ with col_title:
 
 st.divider()
 
-# --- STRUCTURE CSV (Stricte conformité avec le fichier de suivi du 07-04-2026) ---
+# --- STRUCTURE CSV (Stricte conformité avec le fichier Suivi des fournisseurs) ---
 COLUMNS_TEMPLATE = [
     'N° chrono', 'Date de réception', 'Date de facture', 'Fournisseurs', 'N° facture', 
     ' HT Exo ', ' HT 2,10% ', ' TVA 2,10% ', ' HT 5,5% ', ' TVA 5,50% ', ' HT 10% ', 
@@ -83,20 +85,21 @@ def extract_pdf_text(file):
     return text
 
 def generate_compta_response(client, pdf_content):
-    # Prompt de Super-Contrôleur aligné sur le référentiel CSV
+    # Prompt configuré pour utiliser le CSV de référence et éviter les erreurs de fournisseur
     system_prompt = {
         "role": "system",
         "content": (
             "Tu es un expert comptable pour la librairie 'Nouveau Chapitre'. "
-            "Analyse ce document et extrait les données pour le fichier de suivi.\n\n"
-            "DIRECTIVES DE RÉFÉRENCE (STRICRES) :\n"
-            "1. FOURNISSEUR : C'est le commerçant émetteur (ex: Kappuccino, PLM Diffusion, MDS). "
-            "NE CONFONDS PAS le vendeur avec sa banque (ex: Intesa San Paolo, SumUp) ou avec le client (Nouveau Chapitre).\n"
-            "2. VENTILATION PAR TAUX : Identifie le taux de TVA. "
-            "Si TVA 5.5%, remplis ' HT 5,5% ' et ' TVA 5,50% '. Si TVA 20%, remplis ' HT 20% ' et ' TVA 20% '. "
-            "Laisse les autres colonnes de TVA vides.\n"
-            "3. FORMATS : Dates en JJ.MM.AAAA. Montants numériques (utilisant la virgule ou le point selon le standard Excel).\n"
-            "4. MODE DE PAIEMENT : Utilise 'CB', 'Virement', 'LCR' ou 'Chèque'.\n"
+            "Ta mission est d'extraire les données d'un document pour un tableau de suivi.\n\n"
+            "DIRECTIVES DE RÉFÉRENCE (IMPÉRATIF) :\n"
+            "1. FOURNISSEUR : Identifie l'entité qui vend (ex: Kappuccino, PLM Diffusion, MDS). "
+            "Interdiction formelle de mettre 'Nouveau Chapitre' ou 'EURL Nouveau Chapitre' dans la colonne 'Fournisseurs'. "
+            "Ignore également les noms de banques ou terminaux de paiement (ex: Intesa San Paolo, SumUp, Ingenico).\n"
+            "2. VENTILATION TVA : Analyse les taux appliqués. "
+            "Si la TVA est de 5,5%, remplis exclusivement ' HT 5,5% ' et ' TVA 5,50% '. "
+            "Si c'est du 20%, remplis ' HT 20% ' et ' TVA 20% '. Utilise les colonnes exactes du modèle.\n"
+            "3. FORMATS : Dates en JJ.MM.AAAA. Montants numériques (virgule ou point).\n"
+            "4. MODE DE PAIEMENT : Utilise des termes courts (ex: 'CB', 'Virement', 'LCR', 'Chèque').\n"
             f"Renvoie uniquement un JSON avec ces clés : {COLUMNS_TEMPLATE} + 'Note_IA'."
         )
     }
@@ -139,10 +142,10 @@ if menu == "📥 Nouvelle Saisie":
             for idx, file in enumerate(uploaded_files):
                 text = extract_pdf_text(file)
                 if text:
-                    with st.spinner(f"Analyse : {file.name}"):
+                    with st.spinner(f"Analyse de {file.name}..."):
                         data = generate_compta_response(client, text)
                         data['N° chrono'] = f"26/{last_chrono + idx + 1}"
-                        # Logique temporelle pour Excel
+                        # Logique de calcul des colonnes temporelles pour Excel
                         try:
                             if data.get('Date de facture'):
                                 dt = datetime.strptime(data['Date de facture'], "%d.%m.%Y")
@@ -156,7 +159,7 @@ if menu == "📥 Nouvelle Saisie":
                 bar.progress((idx + 1) / len(uploaded_files))
             
             if results:
-                # Sécurisation Arrow (conversion String)
+                # Sécurisation des types pour l'affichage (Arrow compatible)
                 st.session_state.df_result = pd.DataFrame(results).reindex(columns=COLUMNS_TEMPLATE).astype(str)
                 st.session_state.logs = tmp_logs
                 st.session_state.history.append({
@@ -182,7 +185,7 @@ elif menu == "📜 Historique":
         st.info("Aucun historique disponible.")
     else:
         for i, entry in enumerate(reversed(st.session_state.history)):
-            with st.expander(f"Session du {entry['date']} ({entry['count']} facture(s))"):
+            with st.expander(f"Session du {entry['date']} ({entry['count']} document(s))"):
                 st.dataframe(entry['df'], width='stretch')
                 csv_hist = entry['df'].to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
-                st.download_button(f"Télécharger l'export #{i}", data=csv_hist, file_name=f"archive_{i}.csv", key=f"hist_{i}")
+                st.download_button(f"Télécharger cet export", data=csv_hist, file_name=f"archive_{i}.csv", key=f"hist_{i}")
