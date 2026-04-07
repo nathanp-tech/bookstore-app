@@ -11,13 +11,11 @@ from dotenv import load_dotenv
 load_dotenv()
 
 def get_api_key():
-    # Test des secrets Streamlit (Cloud) sans lever d'erreur si absent
     try:
         if "OPENAI_API_KEY" in st.secrets:
             return st.secrets["OPENAI_API_KEY"]
     except:
         pass
-    # Repli sur le fichier .env (Local)
     return os.getenv("OPENAI_API_KEY")
 
 api_key = get_api_key()
@@ -42,13 +40,8 @@ st.markdown("""
     <style>
     .main { background-color: #f8f9fa; }
     .stButton>button { 
-        width: 100%; 
-        border-radius: 8px; 
-        font-weight: bold; 
-        background-color: #1E3A8A; 
-        color: white; 
-        border: none;
-        height: 3em;
+        width: 100%; border-radius: 8px; font-weight: bold; 
+        background-color: #1E3A8A; color: white; border: none; height: 3em;
     }
     .stButton>button:hover { background-color: #3B82F6; }
     .stDataFrame { background-color: white; border-radius: 10px; }
@@ -69,7 +62,7 @@ with col_title:
 
 st.divider()
 
-# --- STRUCTURE CSV COMPLÈTE ---
+# --- STRUCTURE CSV (Stricte conformité avec le fichier de suivi du 07-04-2026) ---
 COLUMNS_TEMPLATE = [
     'N° chrono', 'Date de réception', 'Date de facture', 'Fournisseurs', 'N° facture', 
     ' HT Exo ', ' HT 2,10% ', ' TVA 2,10% ', ' HT 5,5% ', ' TVA 5,50% ', ' HT 10% ', 
@@ -90,23 +83,28 @@ def extract_pdf_text(file):
     return text
 
 def generate_compta_response(client, pdf_content):
-    # Prompt renforcé pour éviter les erreurs de fournisseur et de montants
+    # Prompt de Super-Contrôleur aligné sur le référentiel CSV
     system_prompt = {
         "role": "system",
         "content": (
-            "Tu es un expert comptable rigoureux pour la librairie 'Nouveau Chapitre'. "
-            "IMPORTANT : Le destinataire (client) est TOUJOURS 'Nouveau Chapitre'. "
-            "Ne mets JAMAIS 'Nouveau Chapitre' dans la colonne 'Fournisseurs'. "
-            "Le fournisseur est l'entité qui émet la facture (ex: Kappuccino, PLM Diffusion). "
-            "Vérifie minutieusement les montants (Total TTC, TVA, HT). "
-            f"Format dates: JJ.MM.AAAA. Clés JSON attendues : {COLUMNS_TEMPLATE} + 'Note_IA'."
+            "Tu es un expert comptable pour la librairie 'Nouveau Chapitre'. "
+            "Analyse ce document et extrait les données pour le fichier de suivi.\n\n"
+            "DIRECTIVES DE RÉFÉRENCE (STRICRES) :\n"
+            "1. FOURNISSEUR : C'est le commerçant émetteur (ex: Kappuccino, PLM Diffusion, MDS). "
+            "NE CONFONDS PAS le vendeur avec sa banque (ex: Intesa San Paolo, SumUp) ou avec le client (Nouveau Chapitre).\n"
+            "2. VENTILATION PAR TAUX : Identifie le taux de TVA. "
+            "Si TVA 5.5%, remplis ' HT 5,5% ' et ' TVA 5,50% '. Si TVA 20%, remplis ' HT 20% ' et ' TVA 20% '. "
+            "Laisse les autres colonnes de TVA vides.\n"
+            "3. FORMATS : Dates en JJ.MM.AAAA. Montants numériques (utilisant la virgule ou le point selon le standard Excel).\n"
+            "4. MODE DE PAIEMENT : Utilise 'CB', 'Virement', 'LCR' ou 'Chèque'.\n"
+            f"Renvoie uniquement un JSON avec ces clés : {COLUMNS_TEMPLATE} + 'Note_IA'."
         )
     }
     response = client.chat.completions.create(
         model="gpt-4o",
         messages=[system_prompt, {"role": "user", "content": pdf_content}],
         response_format={"type": "json_object"},
-        temperature=0.1
+        temperature=0
     )
     return json.loads(response.choices[0].message.content)
 
@@ -141,15 +139,16 @@ if menu == "📥 Nouvelle Saisie":
             for idx, file in enumerate(uploaded_files):
                 text = extract_pdf_text(file)
                 if text:
-                    with st.spinner(f"Analyse de {file.name}..."):
+                    with st.spinner(f"Analyse : {file.name}"):
                         data = generate_compta_response(client, text)
                         data['N° chrono'] = f"26/{last_chrono + idx + 1}"
+                        # Logique temporelle pour Excel
                         try:
                             if data.get('Date de facture'):
                                 dt = datetime.strptime(data['Date de facture'], "%d.%m.%Y")
-                                data['Année'], data['Mois'] = dt.year, dt.month
+                                data['Année'], data['Mois'] = str(dt.year), str(dt.month)
                             if data.get('Échéance'):
-                                data["Mois d'échéance"] = datetime.strptime(data['Échéance'], "%d.%m.%Y").month
+                                data["Mois d'échéance"] = str(datetime.strptime(data['Échéance'], "%d.%m.%Y").month)
                         except: pass
                         
                         tmp_logs.append({"file": file.name, "note": data.pop("Note_IA", "Extraction OK")})
@@ -157,19 +156,17 @@ if menu == "📥 Nouvelle Saisie":
                 bar.progress((idx + 1) / len(uploaded_files))
             
             if results:
-                # Correction ArrowTypeError : Forcer le type String
-                new_df = pd.DataFrame(results).reindex(columns=COLUMNS_TEMPLATE).astype(str)
-                st.session_state.df_result = new_df
+                # Sécurisation Arrow (conversion String)
+                st.session_state.df_result = pd.DataFrame(results).reindex(columns=COLUMNS_TEMPLATE).astype(str)
                 st.session_state.logs = tmp_logs
                 st.session_state.history.append({
                     "date": datetime.now().strftime("%d/%m/%Y %H:%M"),
-                    "df": new_df,
+                    "df": st.session_state.df_result,
                     "count": len(results)
                 })
                 st.rerun()
     else:
         st.subheader("📋 Résultats de l'analyse")
-        # Mise à jour syntaxe Streamlit
         st.dataframe(st.session_state.df_result, width='stretch')
         
         csv = st.session_state.df_result.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
@@ -180,12 +177,12 @@ if menu == "📥 Nouvelle Saisie":
                 st.write(f"**{log['file']}** : {log['note']}")
 
 elif menu == "📜 Historique":
-    st.subheader("Sessions précédentes")
+    st.subheader("Historique des sessions")
     if not st.session_state.history:
         st.info("Aucun historique disponible.")
     else:
         for i, entry in enumerate(reversed(st.session_state.history)):
-            with st.expander(f"Session du {entry['date']} ({entry['count']} document(s))"):
+            with st.expander(f"Session du {entry['date']} ({entry['count']} facture(s))"):
                 st.dataframe(entry['df'], width='stretch')
                 csv_hist = entry['df'].to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
                 st.download_button(f"Télécharger l'export #{i}", data=csv_hist, file_name=f"archive_{i}.csv", key=f"hist_{i}")
