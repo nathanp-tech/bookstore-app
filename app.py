@@ -7,13 +7,45 @@ from pypdf import PdfReader
 from datetime import datetime
 from dotenv import load_dotenv
 
-# --- CHARGEMENT DES PARAMÈTRES DE SÉCURITÉ ---
-load_dotenv()  # Charge le fichier .env local
-
-# Priorité : Secrets Streamlit (Cloud) > Environnement (Local .env)
+# --- CONFIGURATION SÉCURITÉ ---
+load_dotenv()
 api_key = st.secrets.get("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
 
-# --- CONFIGURATION DU FORMAT ---
+# --- INITIALISATION DE L'ÉTAT (SESSION STATE) ---
+if 'df_result' not in st.session_state:
+    st.session_state.df_result = None
+if 'logs' not in st.session_state:
+    st.session_state.logs = []
+
+# --- INTERFACE & DESIGN ---
+st.set_page_config(
+    page_title="Gestion Comptable | Nouveau Chapitre",
+    page_icon="📚",
+    layout="wide"
+)
+
+# CSS pour le look moderne
+st.markdown("""
+    <style>
+    .stButton>button { width: 100%; border-radius: 8px; font-weight: bold; }
+    .main { background-color: #f8f9fa; }
+    </style>
+    """, unsafe_allow_html=True)
+
+# --- LOGO ET TITRE ---
+col_logo, col_title = st.columns([1, 4])
+with col_logo:
+    if os.path.exists("logo.png"):
+        st.image("logo.png", width=150)
+    else:
+        st.title("📚")
+with col_title:
+    st.title("Interface Comptable Intelligente")
+    st.write("Librairie Nouveau Chapitre — Conservation des données après téléchargement")
+
+st.divider()
+
+# --- PARAMÈTRES CSV ---
 COLUMNS_TEMPLATE = [
     'N° chrono', 'Date de réception', 'Date de facture', 'Fournisseurs', 'N° facture', 
     ' HT Exo ', ' HT 2,10% ', ' TVA 2,10% ', ' HT 5,5% ', ' TVA 5,50% ', ' HT 10% ', 
@@ -21,6 +53,7 @@ COLUMNS_TEMPLATE = [
     'Échéance', 'Payée le', 'Mode de paiement', 'Vu bq', 'N°', 'Année', 'Mois', "Mois d'échéance"
 ]
 
+# --- FONCTIONS ---
 def extract_pdf_text(file):
     text = ""
     try:
@@ -29,19 +62,14 @@ def extract_pdf_text(file):
             extracted = page.extract_text()
             if extracted: text += extracted + "\n"
     except Exception as e:
-        st.error(f"Erreur lecture PDF : {e}")
+        st.error(f"Erreur PDF : {e}")
     return text
 
 def generate_compta_response(client, pdf_content):
     system_prompt = {
         "role": "system",
-        "content": (
-            "Tu es un expert comptable pour une librairie. Analyse la facture et extrait les données pour le CSV. "
-            "Si une info manque, laisse vide. Pour les montants, n'inclus que le chiffre (ex: 33.90). "
-            f"Clés JSON attendues : {COLUMNS_TEMPLATE} + 'Note_IA'."
-        )
+        "content": f"Tu es un expert comptable. Extrait les données. Format dates: JJ.MM.AAAA. Clés JSON: {COLUMNS_TEMPLATE} + 'Note_IA'."
     }
-
     response = client.chat.completions.create(
         model="gpt-4o",
         messages=[system_prompt, {"role": "user", "content": pdf_content}],
@@ -50,55 +78,67 @@ def generate_compta_response(client, pdf_content):
     )
     return json.loads(response.choices[0].message.content)
 
-# --- INTERFACE ---
-st.set_page_config(page_title="Compta Librairie Pro", page_icon="🧾", layout="wide")
-st.title("📚 Assistant Comptable")
-
-if not api_key:
-    st.error("⚠️ Clé API manquante. Configurez le fichier .env ou les Secrets Streamlit.")
-    st.stop()
-
+# --- SIDEBAR ---
 with st.sidebar:
     st.header("⚙️ Paramètres")
-    last_chrono = st.number_input("Dernier N° Chrono (ex: 496)", value=496)
+    last_chrono = st.number_input("Dernier N° Chrono", value=496)
+    st.divider()
+    if st.button("🗑️ NOUVELLE SAISIE (Effacer tout)"):
+        st.session_state.df_result = None
+        st.session_state.logs = []
+        st.rerun()
 
-uploaded_files = st.file_uploader("Factures PDF", type="pdf", accept_multiple_files=True)
-
-if uploaded_files:
-    client = OpenAI(api_key=api_key)
+# --- ZONE DE TRAVAIL ---
+if st.session_state.df_result is None:
+    # Mode Saisie
+    uploaded_files = st.file_uploader("📂 Déposez vos factures PDF ici", type="pdf", accept_multiple_files=True)
     
-    if st.button("🚀 Analyser"):
+    if uploaded_files and st.button("🚀 LANCER L'ANALYSE"):
+        client = OpenAI(api_key=api_key)
         results = []
-        logs = []
-        progress_bar = st.progress(0)
+        tmp_logs = []
         
+        progress_bar = st.progress(0)
         for idx, file in enumerate(uploaded_files):
-            text_content = extract_pdf_text(file)
-            if text_content:
-                with st.spinner(f"Analyse : {file.name}"):
-                    data = generate_compta_response(client, text_content)
-                    if "error" not in data:
-                        data['N° chrono'] = f"26/{last_chrono + idx + 1}"
-                        # Calcul automatique des dates
-                        try:
-                            if data.get('Date de facture'):
-                                date_obj = datetime.strptime(data['Date de facture'], "%d.%m.%Y")
-                                data['Année'], data['Mois'] = date_obj.year, date_obj.month
-                            if data.get('Échéance'):
-                                data["Mois d'échéance"] = datetime.strptime(data['Échéance'], "%d.%m.%Y").month
-                        except: pass
-                        
-                        note = data.pop("Note_IA", "OK")
-                        logs.append({"file": file.name, "note": note})
-                        results.append(data)
+            text = extract_pdf_text(file)
+            if text:
+                data = generate_compta_response(client, text)
+                data['N° chrono'] = f"26/{last_chrono + idx + 1}"
+                # Calcul auto des dates
+                try:
+                    if data.get('Date de facture'):
+                        dt = datetime.strptime(data['Date de facture'], "%d.%m.%Y")
+                        data['Année'], data['Mois'] = dt.year, dt.month
+                except: pass
+                
+                tmp_logs.append({"file": file.name, "note": data.pop("Note_IA", "Extraction OK")})
+                results.append(data)
             progress_bar.progress((idx + 1) / len(uploaded_files))
-
+        
         if results:
-            df = pd.DataFrame(results).reindex(columns=COLUMNS_TEMPLATE)
-            st.success("Extraction terminée !")
-            st.dataframe(df)
-            csv = df.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
-            st.download_button("📥 Télécharger CSV", data=csv, file_name="import_compta.csv", mime="text/csv")
-            
-            with st.expander("💬 Commentaires de l'IA"):
-                for log in logs: st.write(f"**{log['file']}**: {log['note']}")
+            st.session_state.df_result = pd.DataFrame(results).reindex(columns=COLUMNS_TEMPLATE)
+            st.session_state.logs = tmp_logs
+            st.rerun()
+
+else:
+    # Mode Affichage (Persistant après téléchargement)
+    st.success("✅ Analyse terminée. Le tableau est conservé ci-dessous.")
+    
+    st.subheader("📋 Données extraites")
+    st.dataframe(st.session_state.df_result, use_container_width=True)
+
+    # Exportation
+    csv = st.session_state.df_result.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
+    st.download_button(
+        label="📥 TÉLÉCHARGER LE CSV",
+        data=csv,
+        file_name=f"import_compta_{datetime.now().strftime('%Y%m%d')}.csv",
+        mime="text/csv"
+    )
+    
+    st.divider()
+    st.subheader("💬 Rapport de l'assistant")
+    for log in st.session_state.logs:
+        with st.chat_message("assistant"):
+            st.write(f"**{log['file']}**")
+            st.caption(log['note'])
