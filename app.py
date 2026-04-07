@@ -49,7 +49,9 @@ st.markdown("""
 # --- EN-TÊTE ---
 col_logo, col_title = st.columns([1, 5])
 with col_logo:
-    logo_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logo.png")
+    # Chemin robuste pour le logo (local et cloud)
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    logo_path = os.path.join(current_dir, "logo.png")
     if os.path.exists(logo_path):
         st.image(logo_path, width=120)
     else:
@@ -59,7 +61,7 @@ with col_title:
 
 st.divider()
 
-# --- STRUCTURE CSV ---
+# --- STRUCTURE CSV COMPLÈTE ---
 COLUMNS_TEMPLATE = [
     'N° chrono', 'Date de réception', 'Date de facture', 'Fournisseurs', 'N° facture', 
     ' HT Exo ', ' HT 2,10% ', ' TVA 2,10% ', ' HT 5,5% ', ' TVA 5,50% ', ' HT 10% ', 
@@ -67,7 +69,7 @@ COLUMNS_TEMPLATE = [
     'Échéance', 'Payée le', 'Mode de paiement', 'Vu bq', 'N°', 'Année', 'Mois', "Mois d'échéance"
 ]
 
-# --- FONCTIONS UTILES ---
+# --- FONCTIONS ---
 def extract_pdf_text(file):
     text = ""
     try:
@@ -80,9 +82,16 @@ def extract_pdf_text(file):
     return text
 
 def generate_compta_response(client, pdf_content):
+    # Prompt renforcé pour éviter la confusion entre destinataire et fournisseur
     system_prompt = {
         "role": "system",
-        "content": f"Tu es un expert comptable. Extrait les données. Format dates: JJ.MM.AAAA. Clés JSON: {COLUMNS_TEMPLATE} + 'Note_IA'."
+        "content": (
+            "Tu es un expert comptable rigoureux. Analyse la facture et extrait les données. "
+            "IMPORTANT : Le destinataire de la facture est 'Librairie Nouveau Chapitre' ou 'EURL Nouveau Chapitre'. "
+            "NE CONFONDS JAMAIS le destinataire avec le FOURNISSEUR. Le fournisseur est l'entité qui émet le document. "
+            "Vérifie minutieusement les montants (Total TTC, Total TVA, Total HT). "
+            f"Format dates: JJ.MM.AAAA. Clés JSON attendues : {COLUMNS_TEMPLATE} + 'Note_IA'."
+        )
     }
     response = client.chat.completions.create(
         model="gpt-4o",
@@ -100,12 +109,12 @@ with st.sidebar:
     st.divider()
     menu = st.radio("Navigation", ["📥 Nouvelle Saisie", "📜 Historique des Uploads"])
     
-    if st.button("🗑️ Effacer la session en cours"):
+    if st.button("🗑️ Réinitialiser la session"):
         st.session_state.df_result = None
         st.session_state.logs = []
         st.rerun()
 
-# --- CONTENU PRINCIPAL ---
+# --- LOGIQUE PRINCIPALE ---
 if not api_key:
     st.error("🔑 Clé API manquante. Configurez votre fichier .env ou les Secrets Streamlit.")
     st.stop()
@@ -125,7 +134,7 @@ if menu == "📥 Nouvelle Saisie":
                 if text:
                     data = generate_compta_response(client, text)
                     data['N° chrono'] = f"26/{last_chrono + idx + 1}"
-                    # Extraction dates auto
+                    # Extraction auto des dates pour les colonnes de fin
                     try:
                         if data.get('Date de facture'):
                             dt = datetime.strptime(data['Date de facture'], "%d.%m.%Y")
@@ -140,7 +149,7 @@ if menu == "📥 Nouvelle Saisie":
                 new_df = pd.DataFrame(results).reindex(columns=COLUMNS_TEMPLATE)
                 st.session_state.df_result = new_df
                 st.session_state.logs = tmp_logs
-                # Sauvegarde automatique dans l'historique
+                # Archivage dans l'historique
                 st.session_state.history.append({
                     "date": datetime.now().strftime("%d/%m/%Y %H:%M"),
                     "df": new_df,
@@ -159,12 +168,12 @@ if menu == "📥 Nouvelle Saisie":
                 st.write(f"**{log['file']}** : {log['note']}")
 
 elif menu == "📜 Historique des Uploads":
-    st.subheader("Historique des sessions")
+    st.subheader("Sessions précédentes")
     if not st.session_state.history:
-        st.info("Aucun historique disponible pour le moment.")
+        st.info("Aucun historique disponible.")
     else:
         for i, entry in enumerate(reversed(st.session_state.history)):
             with st.expander(f"Session du {entry['date']} ({entry['count']} facture(s))"):
                 st.dataframe(entry['df'], use_container_width=True)
                 csv_hist = entry['df'].to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
-                st.download_button(f"Télécharger cet export (#{i})", data=csv_hist, file_name=f"archive_compta_{i}.csv", key=f"hist_{i}")
+                st.download_button(f"Télécharger l'export #{i}", data=csv_hist, file_name=f"archive_compta_{i}.csv", key=f"hist_{i}")
