@@ -58,7 +58,6 @@ st.markdown("""
 # --- EN-TÊTE ---
 col_logo, col_title = st.columns([1, 5])
 with col_logo:
-    # Chemin robuste pour le logo
     current_dir = os.path.dirname(os.path.abspath(__file__))
     logo_path = os.path.join(current_dir, "logo.png")
     if os.path.exists(logo_path):
@@ -91,19 +90,16 @@ def extract_pdf_text(file):
     return text
 
 def generate_compta_response(client, pdf_content):
-    # Prompt ultra-précis pour éviter les confusions de noms et d'importants écarts de montants
+    # Prompt renforcé pour éviter les erreurs de fournisseur et de montants
     system_prompt = {
         "role": "system",
         "content": (
             "Tu es un expert comptable rigoureux pour la librairie 'Nouveau Chapitre'. "
-            "Ta mission est d'extraire les données d'une facture pour un tableau de suivi. \n\n"
-            "RÈGLES CRITIQUES :\n"
-            "1. IDENTIFICATION DU FOURNISSEUR : Le destinataire (client) est TOUJOURS 'Nouveau Chapitre'. "
-            "Ne mets JAMAIS 'Nouveau Chapitre' dans la colonne 'Fournisseurs'. Le fournisseur est l'entité qui vend (ex: PLM Diffusion, Kappuccino, etc.).\n"
-            "2. MONTANTS : Vérifie bien le Total TTC. Si tu vois plusieurs montants, prends le 'TOTAL' ou 'Net à payer'. "
-            "Sépare bien les bases HT et les montants de TVA selon les taux (5.5%, 20%, etc.).\n"
-            "3. DATES : Format JJ.MM.AAAA.\n"
-            f"4. STRUCTURE : Renvoie UNIQUEMENT un JSON avec ces clés : {COLUMNS_TEMPLATE} + 'Note_IA'."
+            "IMPORTANT : Le destinataire (client) est TOUJOURS 'Nouveau Chapitre'. "
+            "Ne mets JAMAIS 'Nouveau Chapitre' dans la colonne 'Fournisseurs'. "
+            "Le fournisseur est l'entité qui émet la facture (ex: Kappuccino, PLM Diffusion). "
+            "Vérifie minutieusement les montants (Total TTC, TVA, HT). "
+            f"Format dates: JJ.MM.AAAA. Clés JSON attendues : {COLUMNS_TEMPLATE} + 'Note_IA'."
         )
     }
     response = client.chat.completions.create(
@@ -117,10 +113,10 @@ def generate_compta_response(client, pdf_content):
 # --- NAVIGATION SIDEBAR ---
 with st.sidebar:
     st.header("⚙️ Paramètres")
-    last_chrono = st.number_input("Dernier N° Chrono", value=496, help="Indiquez le dernier numéro utilisé dans votre Excel.")
+    last_chrono = st.number_input("Dernier N° Chrono", value=496)
     
     st.divider()
-    menu = st.radio("Navigation", ["📥 Nouvelle Saisie", "📜 Historique des Uploads"])
+    menu = st.radio("Navigation", ["📥 Nouvelle Saisie", "📜 Historique"])
     
     if st.button("🗑️ Réinitialiser la session"):
         st.session_state.df_result = None
@@ -148,8 +144,6 @@ if menu == "📥 Nouvelle Saisie":
                     with st.spinner(f"Analyse de {file.name}..."):
                         data = generate_compta_response(client, text)
                         data['N° chrono'] = f"26/{last_chrono + idx + 1}"
-                        
-                        # Calcul auto des colonnes temporelles pour le suivi Excel
                         try:
                             if data.get('Date de facture'):
                                 dt = datetime.strptime(data['Date de facture'], "%d.%m.%Y")
@@ -158,15 +152,15 @@ if menu == "📥 Nouvelle Saisie":
                                 data["Mois d'échéance"] = datetime.strptime(data['Échéance'], "%d.%m.%Y").month
                         except: pass
                         
-                        tmp_logs.append({"file": file.name, "note": data.pop("Note_IA", "Extraction effectuée.")})
+                        tmp_logs.append({"file": file.name, "note": data.pop("Note_IA", "Extraction OK")})
                         results.append(data)
                 bar.progress((idx + 1) / len(uploaded_files))
             
             if results:
-                new_df = pd.DataFrame(results).reindex(columns=COLUMNS_TEMPLATE)
+                # Correction ArrowTypeError : Forcer le type String
+                new_df = pd.DataFrame(results).reindex(columns=COLUMNS_TEMPLATE).astype(str)
                 st.session_state.df_result = new_df
                 st.session_state.logs = tmp_logs
-                # Archivage
                 st.session_state.history.append({
                     "date": datetime.now().strftime("%d/%m/%Y %H:%M"),
                     "df": new_df,
@@ -175,22 +169,23 @@ if menu == "📥 Nouvelle Saisie":
                 st.rerun()
     else:
         st.subheader("📋 Résultats de l'analyse")
-        st.dataframe(st.session_state.df_result, use_container_width=True)
+        # Mise à jour syntaxe Streamlit
+        st.dataframe(st.session_state.df_result, width='stretch')
         
         csv = st.session_state.df_result.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
-        st.download_button("📥 TÉLÉCHARGER LE CSV", data=csv, file_name=f"export_compta_{datetime.now().strftime('%Y%m%d')}.csv", mime="text/csv")
+        st.download_button("📥 Télécharger le CSV", data=csv, file_name="export_compta.csv", mime="text/csv")
         
-        with st.expander("💬 Commentaires de l'assistant (Doutes, calculs...)"):
+        with st.expander("💬 Commentaires de l'assistant"):
             for log in st.session_state.logs:
                 st.write(f"**{log['file']}** : {log['note']}")
 
-elif menu == "📜 Historique des Uploads":
-    st.subheader("Archives des sessions")
+elif menu == "📜 Historique":
+    st.subheader("Sessions précédentes")
     if not st.session_state.history:
-        st.info("Aucun historique pour le moment.")
+        st.info("Aucun historique disponible.")
     else:
         for i, entry in enumerate(reversed(st.session_state.history)):
-            with st.expander(f"Session du {entry['date']} — {entry['count']} document(s)"):
-                st.dataframe(entry['df'], use_container_width=True)
+            with st.expander(f"Session du {entry['date']} ({entry['count']} document(s))"):
+                st.dataframe(entry['df'], width='stretch')
                 csv_hist = entry['df'].to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
-                st.download_button(f"Exporter à nouveau cette session", data=csv_hist, file_name=f"archive_{i}.csv", key=f"hist_{i}")
+                st.download_button(f"Télécharger l'export #{i}", data=csv_hist, file_name=f"archive_{i}.csv", key=f"hist_{i}")
