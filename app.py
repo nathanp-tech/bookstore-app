@@ -210,7 +210,7 @@ if menu == "📥 Nouvelle Saisie":
         csv = st.session_state.df_result.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
         st.download_button("📥 Télécharger le CSV", data=csv, file_name="export_compta.csv", mime="text/csv")
         
-        with st.expander("💬 Commentaires de l'assistant", expanded=True):
+        with st.expander("💬 Commentaires de l'assistant", expanded=False):
             for log in st.session_state.logs:
                 st.markdown(f"#### 📄 {log['file']}")
                 st.markdown(log['note'])
