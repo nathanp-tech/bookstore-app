@@ -3,9 +3,17 @@ import pandas as pd
 import json
 import os
 from openai import OpenAI
-from pypdf import PdfReader
+import fitz  # PyMuPDF
+import base64
 from datetime import datetime
 from dotenv import load_dotenv
+
+# --- CONFIGURATION DE LA PAGE ---
+st.set_page_config(
+    page_title="Libraire Nouveau Chapitre",
+    page_icon="📚",
+    layout="wide"
+)
 
 # --- SÉCURITÉ & CLÉ API ---
 load_dotenv()
@@ -21,13 +29,6 @@ def get_api_key():
     return os.getenv("OPENAI_API_KEY")
 
 api_key = get_api_key()
-
-# --- CONFIGURATION DE LA PAGE ---
-st.set_page_config(
-    page_title="Libraire Nouveau Chapitre",
-    page_icon="📚",
-    layout="wide"
-)
 
 # --- ÉTATS DE SESSION (PERSISTANCE) ---
 if 'df_result' not in st.session_state:
@@ -72,40 +73,73 @@ COLUMNS_TEMPLATE = [
     'Échéance', 'Payée le', 'Mode de paiement', 'Vu bq', 'N°', 'Année', 'Mois', "Mois d'échéance"
 ]
 
-# --- FONCTIONS ---
-def extract_pdf_text(file):
-    text = ""
-    try:
-        reader = PdfReader(file)
-        for page in reader.pages:
-            extracted = page.extract_text()
-            if extracted: text += extracted + "\n"
-    except Exception as e:
-        st.error(f"Erreur PDF : {e}")
-    return text
+# --- LISTE DES FOURNISSEURS ---
+KNOWN_SUPPLIERS = [
+    "2DCOM", "A VUE D'ŒIL", "ACCES EDITIONS", "AHI33", "AIR FROID", "ALG CLEAN", "ARTODANCE", 
+    "AU JARDIN D'ALICE", "AUX EDITIONS DU PHARE", "AVEM", "AVM DIFFUSION", "BELLES LETTRES", 
+    "BOREAL", "BREVO", "BRUDIS", "BUREAU VALLEE", "CABAIA", "CAIRN", "CENTRE DES FINANCES PUBLIQUES", 
+    "COMPAGNIE 3 CHARDONS", "CYBER SCRIBE FRANCE", "DARUMA SUSHI", "DATALIB", "DG DIFFUSION", 
+    "DIFFU-G", "DILICOM", "DILISCO", "DJECO", "DNM", "DOD&CIE", "DRAGONS LUTINES ET COMPAGNIE", 
+    "E.LECLERC", "EAU BORDEAUX METROPOLE", "EDF", "EDITIONS DU BORD DU LOT", "EDITIONS DU BRIGADIER", 
+    "EDITIONS DU DESASTRE", "EDITIONS FRISON ROCHE", "EDITIONS HOH", "EDITIONS LA LIBRAIRIE DES TERRITOIRES", 
+    "EDITIONS LA RAVINIERE", "EDITIONS LETTMOTIFF", "EDITIONS NUAGE", "EDITIONS PASSIFLORE", 
+    "EFFIA BASSINS A FLOT", "EI DOMINIQUE ESSE", "FIDALLIANCE", "FLAMMARION", "FONCIA", "GEODIS", 
+    "GESTE EDITIONS", "GIGAMIC", "GRINALBERT POLYMEDIA", "HACHETTE", "HARMONIA MUNDI LIVRE SA", 
+    "IDP HOME VIDEO", "IMMATERIEL.COM", "IN OCTAVO EDITIONS", "INTERART", "INTERFORUM", "INTERMARCHE", 
+    "KAPPUCCINO", "L'ATELIER DU PAPIER", "L'HARMATTAN", "LA GENERALE LIBREST", "LA POSTE", "LE FESTIN", 
+    "LE TALMELIER", "LEGAMI", "LES PETITES ALLEES IMPRIM17", "LIBRAIRIE & EDITION YOU-FENG", 
+    "LIBRAIRIE J. VRIN", "LIZIA", "MAKASSAR", "MDS", "MYOSIRIS DIFFUSION", "OLF", "OPCO EP", "ORANGE", 
+    "PATCHWORK", "PB DEVELOPPEMENT", "PHENICIA", "PIPERNO", "PLM DIFFUSION", "POLLEN", "PROJESTION", 
+    "RAGAZZI DA PEPPONE", "SCUDERY EDITIONS", "SERENDIP", "SERVICE HISTORIQUE DE LA DEFENSE", "SIDE", 
+    "SODIS", "SOFIA", "SPAR", "YAKABOOKS"
+]
 
-def generate_compta_response(client, pdf_content):
+# --- FONCTIONS ---
+def extract_pdf_images(file):
+    images_base64 = []
+    try:
+        file_bytes = file.read()
+        doc = fitz.open(stream=file_bytes, filetype="pdf")
+        for page in doc:
+            pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))  # Zoom x2 pour la lisibilité
+            img_bytes = pix.tobytes("jpeg")
+            images_base64.append(base64.b64encode(img_bytes).decode('utf-8'))
+        doc.close()
+        file.seek(0)
+    except Exception as e:
+        st.error(f"Erreur lors de la conversion du PDF en image : {e}")
+    return images_base64
+
+def generate_compta_response(client, images_base64):
+    suppliers_str = ", ".join(KNOWN_SUPPLIERS)
     # Prompt configuré pour utiliser le CSV de référence et éviter les erreurs de fournisseur
     system_prompt = {
         "role": "system",
         "content": (
             "Tu es un expert comptable pour la librairie 'Nouveau Chapitre'. "
-            "Ta mission est d'extraire les données d'un document pour un tableau de suivi.\n\n"
+            "Ta mission est d'extraire les données d'un document (fourni sous forme d'images) pour un tableau de suivi.\n\n"
             "DIRECTIVES DE RÉFÉRENCE (IMPÉRATIF) :\n"
-            "1. FOURNISSEUR : Identifie l'entité qui vend (ex: Kappuccino, PLM Diffusion, MDS). "
+            "1. FOURNISSEUR : Identifie l'entité qui vend. Le fournisseur est souvent l'information la plus mise en avant sur la facture (logo, texte de grande taille, en-tête). "
+            f"Voici une liste de fournisseurs déjà identifiés : {suppliers_str}. "
+            "Si le fournisseur correspond à l'un d'eux, utilise exactement ce nom. Si aucun ne correspond, tu dois IMPÉRATIVEMENT écrire le nom identifié en MAJUSCULES. "
             "Interdiction formelle de mettre 'Nouveau Chapitre' ou 'EURL Nouveau Chapitre' dans la colonne 'Fournisseurs'. "
             "Ignore également les noms de banques ou terminaux de paiement (ex: Intesa San Paolo, SumUp, Ingenico).\n"
             "2. VENTILATION TVA : Analyse les taux appliqués. "
             "Si la TVA est de 5,5%, remplis exclusivement ' HT 5,5% ' et ' TVA 5,50% '. "
             "Si c'est du 20%, remplis ' HT 20% ' et ' TVA 20% '. Utilise les colonnes exactes du modèle.\n"
-            "3. FORMATS : Dates en JJ.MM.AAAA. Montants numériques (virgule ou point).\n"
-            "4. MODE DE PAIEMENT : Utilise des termes courts (ex: 'CB', 'Virement', 'LCR', 'Chèque').\n"
+            "3. FORMATS ET DATES : Dates en JJ.MM.AAAA. Montants numériques (virgule ou point). Si une date de réception est trouvée sur le document, il faut utiliser cette date pour la 'Date de facture'.\n"
+            "4. MODE DE PAIEMENT : Les seules options possibles sont 'CB', 'LCR', 'PRVT' (pour les prélèvements, par exemple SEPA Direct Debit), ou 'VIREMENT'. N'utilise aucune autre valeur.\n"
             f"Renvoie uniquement un JSON avec ces clés : {COLUMNS_TEMPLATE} + 'Note_IA'."
         )
     }
+
+    user_content = [{"type": "text", "text": "Analyse ces images de facture et extrais les informations demandées au format JSON."}]
+    for base64_image in images_base64:
+        user_content.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}})
+
     response = client.chat.completions.create(
         model="gpt-4o",
-        messages=[system_prompt, {"role": "user", "content": pdf_content}],
+        messages=[system_prompt, {"role": "user", "content": user_content}],
         response_format={"type": "json_object"},
         temperature=0
     )
@@ -140,10 +174,10 @@ if menu == "📥 Nouvelle Saisie":
             
             bar = st.progress(0)
             for idx, file in enumerate(uploaded_files):
-                text = extract_pdf_text(file)
-                if text:
+                images_base64 = extract_pdf_images(file)
+                if images_base64:
                     with st.spinner(f"Analyse de {file.name}..."):
-                        data = generate_compta_response(client, text)
+                        data = generate_compta_response(client, images_base64)
                         data['N° chrono'] = f"26/{last_chrono + idx + 1}"
                         # Logique de calcul des colonnes temporelles pour Excel
                         try:
@@ -170,7 +204,7 @@ if menu == "📥 Nouvelle Saisie":
                 st.rerun()
     else:
         st.subheader("📋 Résultats de l'analyse")
-        st.dataframe(st.session_state.df_result, width='stretch')
+        st.dataframe(st.session_state.df_result, use_container_width=True)
         
         csv = st.session_state.df_result.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
         st.download_button("📥 Télécharger le CSV", data=csv, file_name="export_compta.csv", mime="text/csv")
@@ -186,6 +220,6 @@ elif menu == "📜 Historique":
     else:
         for i, entry in enumerate(reversed(st.session_state.history)):
             with st.expander(f"Session du {entry['date']} ({entry['count']} document(s))"):
-                st.dataframe(entry['df'], width='stretch')
+                st.dataframe(entry['df'], use_container_width=True)
                 csv_hist = entry['df'].to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
                 st.download_button(f"Télécharger cet export", data=csv_hist, file_name=f"archive_{i}.csv", key=f"hist_{i}")

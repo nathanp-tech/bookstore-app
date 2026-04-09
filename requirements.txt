@@ -3,3 +3,4 @@ pandas
 openai
 pypdf
 python-dotenv
+pymupdf
