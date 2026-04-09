@@ -129,6 +129,7 @@ def generate_compta_response(client, images_base64):
             "Si c'est du 20%, remplis ' HT 20% ' et ' TVA 20% '. Utilise les colonnes exactes du modèle.\n"
             "3. FORMATS ET DATES : Dates en JJ.MM.AAAA. Montants numériques (virgule ou point). Si une date de réception est trouvée sur le document, il faut utiliser cette date pour la 'Date de facture'.\n"
             "4. MODE DE PAIEMENT : Les seules options possibles sont 'CB', 'LCR', 'PRVT' (pour les prélèvements, par exemple SEPA Direct Debit), ou 'VIREMENT'. N'utilise aucune autre valeur.\n"
+            "5. RAPPORT DÉTAILLÉ ('Note_IA') : Tu dois obligatoirement fournir un rapport détaillé dans la clé 'Note_IA'. Pour chaque colonne du tableau, explique ta démarche et justifie pourquoi tu l'as remplie avec la valeur choisie ou pourquoi tu l'as laissée vide.\n"
             f"Renvoie uniquement un JSON avec ces clés : {COLUMNS_TEMPLATE} + 'Note_IA'."
         )
     }
@@ -209,9 +210,11 @@ if menu == "📥 Nouvelle Saisie":
         csv = st.session_state.df_result.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
         st.download_button("📥 Télécharger le CSV", data=csv, file_name="export_compta.csv", mime="text/csv")
         
-        with st.expander("💬 Commentaires de l'assistant"):
+        with st.expander("💬 Commentaires de l'assistant", expanded=True):
             for log in st.session_state.logs:
-                st.write(f"**{log['file']}** : {log['note']}")
+                st.markdown(f"#### 📄 {log['file']}")
+                st.markdown(log['note'])
+                st.divider()
 
 elif menu == "📜 Historique":
     st.subheader("Historique des sessions")
